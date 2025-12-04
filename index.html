@@ -1,284 +1,334 @@
 <!DOCTYPE html>
 <html>
 <head>
-<meta charset="UTF-8">
-<title>SVG Corner Rounder & Line Connector</title>
+<meta charset="utf-8" />
+<title>SVG Corner Rounder & Exporter</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
 <style>
-    body {
-        margin: 0;
-        font-family: sans-serif;
-        background: #202020;
-        color: #fff;
-        display: flex;
-        height: 100vh;
-        overflow: hidden;
-    }
-
-    #leftPanel {
-        width: 260px;
-        background: #2b2b2b;
-        padding: 15px;
-        box-sizing: border-box;
-        border-right: 2px solid #111;
-    }
-
-    #workArea {
-        flex-grow: 1;
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        position: relative;
-        overflow: hidden;
-    }
-
-    #dropZone {
-        position: absolute;
-        top: 0; left: 0;
-        right: 0; bottom: 0;
-        color: #aaa;
-        border: 3px dashed #555;
-        border-radius: 15px;
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        font-size: 22px;
-        opacity: 0.5;
-        pointer-events: none;
-    }
-
-    canvas {
-        border: 1px solid #555;
-        background: white;
-        max-width: 95%;
-        max-height: 95%;
-    }
-
-    label { display: block; margin-top: 15px; }
-    input[type="range"] { width: 100%; }
-    button {
-        margin-top: 20px;
-        width: 100%;
-        padding: 8px;
-        font-size: 16px;
-    }
+    :root { --bg: #181818; --panel: #272727; --muted: #aaa; --accent: #4ea1ff; }
+    html,body { height:100%; margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial; background:var(--bg); color:#fff; }
+    .app { display:flex; height:100vh; }
+    .panel { width:280px; padding:18px; box-sizing:border-box; background:var(--panel); border-right:1px solid #111; }
+    h1 { font-size:18px; margin:0 0 12px 0; }
+    label { display:block; margin-top:12px; color:var(--muted); font-size:13px; }
+    input[type="range"]{ width:100%; margin-top:6px; }
+    input[type="color"]{ margin-top:8px; height:36px; border:0; padding:0; background:#fff; border-radius:6px; }
+    .btn { display:block; width:100%; padding:10px; margin-top:16px; border-radius:8px; border:0; background:var(--accent); color:#041; font-weight:600; cursor:pointer; }
+    .work { flex:1; display:flex; align-items:center; justify-content:center; position:relative; }
+    #dropZone { position:absolute; inset:12px; border:3px dashed #333; border-radius:12px; display:flex; align-items:center; justify-content:center; color:#666; font-size:18px; pointer-events:none; transition:opacity .12s; }
+    canvas { background:#fff; border-radius:6px; box-shadow:0 6px 20px rgba(0,0,0,.6); border:1px solid #ddd; max-width:calc(100% - 40px); max-height:calc(100% - 40px); }
+    .small { font-size:12px; color:var(--muted); }
 </style>
 </head>
 <body>
+<div class="app">
+  <div class="panel">
+    <h1>SVG Corner Rounder — Exporter</h1>
 
-<!-- LEFT TOOL PANEL -->
-<div id="leftPanel">
-    <h2>Controls</h2>
+    <label>Drag & drop an SVG into the canvas area</label>
 
-    <label>
-        Corner radius:
-        <input type="range" id="radiusSlider" min="0" max="80" value="10">
-        <span id="radiusValue">10</span> px
+    <label>Corner radius <span id="radiusValue" class="small">10</span> px
+      <input type="range" id="radiusSlider" min="0" max="200" value="10">
     </label>
 
-    <label>
-        Trim/extend:
-        <input type="range" id="trimSlider" min="-40" max="40" value="0">
-        <span id="trimValue">0</span> px
+    <label>Trim / extend ends <span id="trimValue" class="small">0</span> px
+      <input type="range" id="trimSlider" min="-200" max="200" value="0">
     </label>
 
-    <label>
-        Fill color:
-        <input type="color" id="fillPicker" value="#ff0000">
+    <label>Fill color
+      <input type="color" id="fillPicker" value="#ff0000">
     </label>
 
-    <button id="exportBtn">Export SVG</button>
-</div>
+    <button id="exportBtn" class="btn">Export SVG</button>
+    <div style="margin-top:12px" class="small">Export uses M/L/Q only. Complex curves (C, A, H, V) are not reconstructed yet.</div>
+  </div>
 
-<!-- WORK AREA WITH DRAG & DROP -->
-<div id="workArea">
+  <div class="work">
     <div id="dropZone">Drag SVG file here</div>
-    <canvas id="canvas" width="800" height="600"></canvas>
+    <canvas id="canvas" width="1000" height="700"></canvas>
+  </div>
 </div>
 
 <script>
-/* ============================================================
-   GLOBALS
-============================================================ */
-let svgData = null;
-let parsedPaths = [];
-const canvas = document.getElementById("canvas");
-const ctx = canvas.getContext("2d");
+/* =========================
+   Globals & DOM
+   ========================= */
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d', { alpha: false });
+const dropZone = document.getElementById('dropZone');
 
+const radiusSlider = document.getElementById('radiusSlider');
+const trimSlider = document.getElementById('trimSlider');
+const fillPicker = document.getElementById('fillPicker');
+const radiusValue = document.getElementById('radiusValue');
+const trimValue = document.getElementById('trimValue');
+const exportBtn = document.getElementById('exportBtn');
 
-/* ============================================================
-   DRAG & DROP HANDLERS
-============================================================ */
-const workArea = document.getElementById("workArea");
+let svgDoc = null;           // parsed XML Document
+let parsedPaths = [];        // { originalD, closed, element }
+let svgRootAttrs = {};       // preserve viewBox/width/height, etc.
 
-workArea.addEventListener("dragover", e => {
-    e.preventDefault();
-    document.getElementById("dropZone").style.opacity = "1";
+/* =========================
+   Drag & Drop
+   ========================= */
+const workArea = document.querySelector('.work');
+workArea.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.style.opacity = '1'; });
+workArea.addEventListener('dragleave', (e) => { e.preventDefault(); dropZone.style.opacity = '0.5'; });
+workArea.addEventListener('drop', async (e) => {
+  e.preventDefault();
+  dropZone.style.opacity = '0.5';
+  const f = e.dataTransfer.files && e.dataTransfer.files[0];
+  if (!f) return;
+  const txt = await f.text();
+  loadSVGString(txt);
 });
 
-workArea.addEventListener("dragleave", e => {
-    e.preventDefault();
-    document.getElementById("dropZone").style.opacity = "0.5";
-});
+/* =========================
+   Load SVG & extract top-level attrs + simple paths
+   (this demo focuses on absolute M/L paths)
+   ========================= */
+function loadSVGString(svgText) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(svgText, 'image/svg+xml');
+  const svg = doc.querySelector('svg');
+  if (!svg) {
+    alert('No <svg> element found in file.');
+    return;
+  }
 
-workArea.addEventListener("drop", async e => {
-    e.preventDefault();
-    document.getElementById("dropZone").style.opacity = "0.5";
+  svgDoc = doc;
+  // preserve attributes (viewBox, width, height)
+  svgRootAttrs = {};
+  ['viewBox','width','height','xmlns'].forEach(k => {
+    if (svg.hasAttribute(k)) svgRootAttrs[k] = svg.getAttribute(k);
+  });
 
-    const file = e.dataTransfer.files[0];
-    if (!file) return;
+  // collect paths. We'll only handle paths whose commands are absolute M and L and optional trailing Z.
+  parsedPaths = [];
+  const pathEls = svg.querySelectorAll('path');
+  pathEls.forEach(p => {
+    const d = p.getAttribute('d') || '';
+    // determine if closed: presence of z or Z
+    const closed = /z\s*$/i.test(d.trim());
+    parsedPaths.push({ originalD: d, closed, element: p });
+  });
 
-    const text = await file.text();
-    loadSVG(text);
-});
+  // also attempt to collect simple <polyline> and <polygon> as synthetic paths
+  const polylines = svg.querySelectorAll('polyline, polygon');
+  polylines.forEach(el => {
+    const pts = el.getAttribute('points') || '';
+    // convert points string into absolute sequence M,L...
+    const coords = pts.trim().split(/\s+/).map(s => s.split(',').map(Number));
+    if (coords.length >= 2) {
+      const d = coords.map((c,i)=> (i===0?`M ${c[0]} ${c[1]}`:`L ${c[0]} ${c[1]}`)).join(' ');
+      const closed = el.tagName.toLowerCase() === 'polygon';
+      parsedPaths.push({ originalD: d, closed, element: el });
+    }
+  });
 
-
-/* ============================================================
-   LOAD SVG STRING INTO MEMORY
-============================================================ */
-function loadSVG(text) {
-    svgData = new window.DOMParser().parseFromString(text, "image/svg+xml");
-
-    parsedPaths = [...svgData.querySelectorAll("path")].map(path => ({
-        original: path.getAttribute("d"),
-        element: path
-    }));
-
-    render();
+  render();
 }
 
-
-/* ============================================================
-   BASIC PATH PARSER FOR LINE GEOMETRY
-============================================================ */
-function parsePath(d) {
-    const cmds = d.match(/[a-zA-Z][^a-zA-Z]*/g) || [];
-    const out = [];
-
-    for (const c of cmds) {
-        const type = c[0];
-        const nums = c.slice(1).trim().split(/[\s,]+/).map(Number);
-
-        if (type === "M" || type === "L") {
-            out.push({ type, x: nums[0], y: nums[1] });
-        }
+/* =========================
+   Very small parser for absolute M/L commands only
+   Returns array of points: [{x,y},...]
+   Any other commands are ignored.
+   ========================= */
+function parsePathToPoints(d) {
+  if (!d) return [];
+  const tokens = d.match(/[a-zA-Z][^a-zA-Z]*/g) || [];
+  const pts = [];
+  for (const t of tokens) {
+    const cmd = t[0];
+    if (cmd === 'M' || cmd === 'L') {
+      const nums = t.slice(1).trim().split(/[\s,]+/).map(Number);
+      if (nums.length >= 2 && !isNaN(nums[0]) && !isNaN(nums[1])) {
+        pts.push({ x: nums[0], y: nums[1] });
+      }
+    } else {
+      // unsupported command - stop parsing further for safety
+      // (we could be more lenient and skip, but this keeps output predictable)
+      // continue;
     }
-    return out;
+  }
+  return pts;
 }
 
-
-/* ============================================================
-   ROUND CORNERS + TRIM/EXTEND
-============================================================ */
-function processPath(points, radius, trimDistance) {
-    if (points.length < 2) return points;
-
-    function shiftPoint(p1, p2, dist) {
-        const dx = p2.x - p1.x;
-        const dy = p2.y - p1.y;
-        const len = Math.hypot(dx, dy);
-        return {
-            x: p1.x + (dx / len) * dist,
-            y: p1.y + (dy / len) * dist
-        };
-    }
-
-    points = [...points];
-
-    // trim or extend start + end
-    points[0] = shiftPoint(points[0], points[1], trimDistance);
-    const last = points.length - 1;
-    points[last] = shiftPoint(points[last], points[last - 1], trimDistance);
-
-    // rounding
-    const rounded = [points[0]];
-
-    for (let i = 1; i < points.length - 1; i++) {
-        const p0 = points[i - 1];
-        const p1 = points[i];
-        const p2 = points[i + 1];
-
-        const v1 = { x: p1.x - p0.x, y: p1.y - p0.y };
-        const v2 = { x: p2.x - p1.x, y: p2.y - p1.y };
-
-        const len1 = Math.hypot(v1.x, v1.y);
-        const len2 = Math.hypot(v2.x, v2.y);
-
-        const r = Math.min(radius, len1 / 2, len2 / 2);
-
-        const A = { x: p1.x - (v1.x / len1) * r, y: p1.y - (v1.y / len1) * r };
-        const B = { x: p1.x + (v2.x / len2) * r, y: p1.y + (v2.y / len2) * r };
-
-        rounded.push(A, { type: "arc", cx: p1.x, cy: p1.y, x: B.x, y: B.y });
-    }
-
-    rounded.push(points[points.length - 1]);
-    return rounded;
+/* =========================
+   Geometry helpers: shift (trim/extend), rounding
+   ========================= */
+function shiftPointTowards(a, b, dist) {
+  // move a towards b by distance dist (positive extends toward b, negative moves back)
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const len = Math.hypot(dx, dy);
+  if (len === 0) return { x: a.x, y: a.y };
+  return { x: a.x + (dx / len) * dist, y: a.y + (dy / len) * dist };
 }
 
+function processPointsRound(points, radius, trimDistance) {
+  if (!points || points.length < 2) return points.slice();
 
-/* ============================================================
-   RENDER TO CANVAS
-============================================================ */
+  // clone
+  let pts = points.map(p => ({ x: p.x, y: p.y }));
+  // apply trim/extend to start/end
+  pts[0] = shiftPointTowards(pts[0], pts[1], trimDistance);
+  const last = pts.length - 1;
+  pts[last] = shiftPointTowards(pts[last], pts[last - 1], trimDistance);
+
+  // build segments: we'll include 'arc' segments as objects: {type:'arc', cx, cy, x, y}
+  const out = [];
+  out.push(pts[0]);
+
+  for (let i = 1; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1], p1 = pts[i], p2 = pts[i + 1];
+    const v1 = { x: p1.x - p0.x, y: p1.y - p0.y };
+    const v2 = { x: p2.x - p1.x, y: p2.y - p1.y };
+    const len1 = Math.hypot(v1.x, v1.y), len2 = Math.hypot(v2.x, v2.y);
+    if (len1 === 0 || len2 === 0) {
+      out.push(p1);
+      continue;
+    }
+    const r = Math.min(radius, len1 / 2, len2 / 2);
+    // points A (before corner) and B (after corner)
+    const A = { x: p1.x - (v1.x / len1) * r, y: p1.y - (v1.y / len1) * r };
+    const B = { x: p1.x + (v2.x / len2) * r, y: p1.y + (v2.y / len2) * r };
+    out.push(A);
+    out.push({ type: 'arc', cx: p1.x, cy: p1.y, x: B.x, y: B.y });
+  }
+  out.push(pts[pts.length - 1]);
+  return out;
+}
+
+/* =========================
+   Render to canvas for live preview
+   ========================= */
 function render() {
-    if (!svgData) return;
+  // blank if no data
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    const radius = +radiusSlider.value;
-    const trim = +trimSlider.value;
-    const fill = fillPicker.value;
+  if (!svgDoc) {
+    // show hint
+    ctx.fillStyle = '#666';
+    ctx.font = '18px system-ui';
+    ctx.textAlign = 'center';
+    ctx.fillText('Drop an SVG file here to start', canvas.width/2, canvas.height/2);
+    return;
+  }
 
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const radius = Number(radiusSlider.value);
+  const trim = Number(trimSlider.value);
+  // update UI text
+  radiusValue.textContent = radius;
+  trimValue.textContent = trim;
 
-    for (const p of parsedPaths) {
-        const pts = parsePath(p.original);
-        if (pts.length < 2) continue;
+  // For simplicity we draw at original SVG coordinates. If viewBox is very large we might not fit — user can zoom later.
+  for (const p of parsedPaths) {
+    const points = parsePathToPoints(p.originalD);
+    if (points.length < 2) continue;
+    const processed = processPointsRound(points, radius, trim);
 
-        const processed = processPath(pts, radius, trim);
-
-        ctx.beginPath();
-        ctx.moveTo(processed[0].x, processed[0].y);
-
-        for (let i = 1; i < processed.length; i++) {
-            const pt = processed[i];
-            if (pt.type === "arc") {
-                ctx.quadraticCurveTo(pt.cx, pt.cy, pt.x, pt.y);
-            } else {
-                ctx.lineTo(pt.x, pt.y);
-            }
-        }
-
-        ctx.fillStyle = fill;
-        ctx.strokeStyle = "#000";
-        ctx.lineWidth = 2;
-        ctx.fill();
-        ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(processed[0].x, processed[0].y);
+    for (let i = 1; i < processed.length; i++) {
+      const s = processed[i];
+      if (s && s.type === 'arc') {
+        ctx.quadraticCurveTo(s.cx, s.cy, s.x, s.y);
+      } else {
+        ctx.lineTo(s.x, s.y);
+      }
     }
+    if (p.closed) ctx.closePath();
+    ctx.fillStyle = fillPicker.value;
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 1;
+    ctx.fill();
+    ctx.stroke();
+  }
 }
 
+/* =========================
+   Build path 'd' from processed segments:
+   - segments array returned from processPointsRound
+   - produce "M x y L ... Q cx cy x y ... [Z]"
+   ========================= */
+function buildPathDFromSegments(segments, closed) {
+  if (!segments || segments.length === 0) return '';
+  let d = `M ${round(segments[0].x)} ${round(segments[0].y)} `;
+  for (let i = 1; i < segments.length; i++) {
+    const s = segments[i];
+    if (s && s.type === 'arc') {
+      d += `Q ${round(s.cx)} ${round(s.cy)} ${round(s.x)} ${round(s.y)} `;
+    } else {
+      d += `L ${round(s.x)} ${round(s.y)} `;
+    }
+  }
+  if (closed) d += 'Z';
+  return d.trim();
+}
 
-/* ============================================================
-   UI EVENTS
-============================================================ */
-radiusSlider.oninput = e => {
-    radiusValue.textContent = e.target.value;
-    render();
-};
+function round(v) { return Math.round(v * 1000) / 1000; }
 
-trimSlider.oninput = e => {
-    trimValue.textContent = e.target.value;
-    render();
-};
+/* =========================
+   Export logic: compose an SVG with processed paths
+   ========================= */
+exportBtn.addEventListener('click', () => {
+  if (!svgDoc) {
+    alert('Load an SVG first.');
+    return;
+  }
 
-fillPicker.oninput = render;
+  const radius = Number(radiusSlider.value);
+  const trim = Number(trimSlider.value);
+  const fill = fillPicker.value;
 
+  // create new svg element string
+  // preserve viewBox/width/height if available
+  const attrPairs = [];
+  if (svgRootAttrs.viewBox) attrPairs.push(`viewBox="${svgRootAttrs.viewBox}"`);
+  if (svgRootAttrs.width) attrPairs.push(`width="${svgRootAttrs.width}"`);
+  if (svgRootAttrs.height) attrPairs.push(`height="${svgRootAttrs.height}"`);
+  // ensure xmlns
+  const xmlns = svgRootAttrs.xmlns || 'http://www.w3.org/2000/svg';
+  attrPairs.push(`xmlns="${xmlns}"`);
 
-/* ============================================================
-   EXPORT AS NEW SVG
-============================================================ */
-exportBtn.onclick = () => {
-    if (!svgData) return;
+  let svgOut = `<svg ${attrPairs.join(' ')}>\n`;
 
-    alert("I can give you a full exporter that writes updated <path d='...'> commands based on your edits. Say 'export version' and I’ll generate the complete code.");
-};
+  // For each parsed path, generate new d
+  for (const p of parsedPaths) {
+    const points = parsePathToPoints(p.originalD);
+    if (points.length < 2) continue;
+    const segs = processPointsRound(points, radius, trim);
+    const d = buildPathDFromSegments(segs, p.closed);
+    // create a path element with fill & stroke (user selected fill)
+    svgOut += `  <path d="${d.replace(/"/g, '&quot;')}" fill="${fill}" stroke="#000" stroke-width="1"/>\n`;
+  }
+
+  svgOut += `</svg>`;
+
+  // download as file
+  const blob = new Blob([svgOut], { type: 'image/svg+xml' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'processed.svg';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 500);
+});
+
+/* =========================
+   Wire UI events
+   ========================= */
+radiusSlider.addEventListener('input', render);
+trimSlider.addEventListener('input', render);
+fillPicker.addEventListener('input', render);
+
+/* =========================
+   initial render
+   ========================= */
+render();
+
 </script>
 </body>
 </html>
